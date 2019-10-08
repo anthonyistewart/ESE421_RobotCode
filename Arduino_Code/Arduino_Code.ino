@@ -66,13 +66,20 @@
 // Define Constants
 const long ping_timeout = 5000; // Timeout for ping sensor
 const double desiredDistanceCM = 30.0;  // Desired Distance from wall in CM
-const int calibrationTime = 10;  // Calibration time in seconds
+const int calibrationTime = 10000;  // Calibration time in milliseconds
 const double Kp = 5;  // Proportional Feedback
 const double K_psi = 1.5;  // Heading Feeback
+const double w_theta = 0.5;  //Theta Filter Cutoff
+const double g = 9.81;
 const double W = 18; // wheel base length in CM
 
 double accelX_bias; //Bias for X Acceleration
-double r_bias;  // Bias for Angular Velocity
+double accelY_bias; //Bias for Y Acceleration
+double accelZ_bias; //Bias for Z Acceleration
+double gyroX_bias; //Bias for X Gyro
+double gyroY_bias; //Bias for Y Gyro
+double gyroZ_bias; //Bias for Z Gyro
+
 double servoAngleDeg = 0.0; // Steering angle delta
 int servoBias; //Servo Bias for calibration mode
 
@@ -123,64 +130,60 @@ void setup() {
   lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
 
   Serial.println("Calibrating Sensors...");
-  unsigned long prevTime = millis();
-  double gyroZ;
-  double accelX;
-  double numSamples;
-  while ((millis() - prevTime) < calibrationTime * 1000) {
-    lsm.read();
-    sensors_event_t a, m, g, temp;
-    lsm.getEvent(&a, &m, &g, &temp);
-
-    gyroZ += g.gyro.z;
-    accelX += a.acceleration.x;
-    numSamples++;
-
-    servoBias = analogRead(POT_1);
-    setServoAngle(0.0);
-  }
-  r_bias = gyroZ / numSamples;
-  accelX_bias = accelX / numSamples;
+  calibrateIMU();
   Serial.println("Sensors calibrated!");
 
   status_flag = RUNNING;
-  action_flag = TURN;
+  action_flag = WALL_FOLLOW;
 }
 
 void loop() {
   static int motor_speed;
   static double dt_heading;
-  static double dt_velocity;
+  static double dt_theta;
   static double heading_psi;
+  static double theta_hat;
+  static double theta_bias;
   static double last_heading;
   static double turn_degree = 90;
   static unsigned long prevTime_heading;
-  static unsigned long prevTime_velocity;
+  static unsigned long prevTime_theta;
 
   if (status_flag == RUNNING) {
     //Check front ping sensor distance
     double f_dist = getPingDistance(FRONT_PING);
 
-    if (f_dist < 10) {
+    if (f_dist <= 5) {
       // Enter Calibration Mode
       status_flag = CALIBRATE;
     }
 
     // Move Forward
     moveMotor(50, FORWARD);
-    Serial.print("Ping Dist. - R: ");
-    Serial.print(getPingDistance(RIGHT_PING), DEC);
-    Serial.print(", L: ");
-    Serial.print(getPingDistance(LEFT_PING), DEC);
-    Serial.print(", F: ");
-    Serial.println(getPingDistance(FRONT_PING), DEC);
+
+      Serial.print("Ping Dist. - R: ");
+      Serial.print(getPingDistance(RIGHT_PING), DEC);
+      Serial.print(", L: ");
+      Serial.print(getPingDistance(LEFT_PING), DEC);
+      Serial.print(", F: ");
+      Serial.println(getPingDistance(FRONT_PING), DEC);
 
     // Heading Calculation
     dt_heading = ((micros() - prevTime_heading) * 0.000001);
-    heading_psi += ((getIMUData(OMEGAZ) - r_bias) * dt_heading);
+    heading_psi += (getIMUData(OMEGAZ) * dt_heading);
     prevTime_heading = micros();
     Serial.print("Heading (Ψ): ");
     Serial.println(heading_psi, DEC);
+
+    // Theta Hat Calculation
+    dt_theta = ((micros() - prevTime_theta) * 0.000001);
+    double theta_g = -57.3 * getIMUData(AY) * (1 / g);
+    theta_bias = w_theta * (theta_g - theta_hat);
+    theta_hat += ((theta_bias + getIMUData(OMEGAX)) * dt_theta);
+    prevTime_theta = micros();
+    Serial.print("Theta Hat (θ): ");
+    Serial.println(theta_hat, DEC);
+
 
     double error;
     if (action_flag == WALL_FOLLOW) {
@@ -191,6 +194,7 @@ void loop() {
         // Proportional Feedback
         servoAngleDeg = -K_psi * error;
       }
+      // Follow Wall
       else {
         error = (desiredDistanceCM - getPingDistance(RIGHT_PING));
 
@@ -200,7 +204,7 @@ void loop() {
       }
     }
 
-    if (action_flag == TURN) {
+    else if (action_flag == TURN) {
 
       double desired_heading = turn_degree + last_heading;
       error = (desired_heading - heading_psi);
@@ -220,10 +224,6 @@ void loop() {
     servoAngleDeg = constrain(servoAngleDeg, -20.0, 20.0);
     setServoAngle(servoAngleDeg);
   }
-  
-  if (status_flag == STOP) {
-    while(1){}
-  }
 
   if (status_flag == CALIBRATE) {
     // Stop Motors
@@ -239,6 +239,7 @@ void loop() {
 
     status_flag = RUNNING;
   }
+  Serial.print("Servo Angle: ");
   Serial.println(servoAngleDeg);
 }
 
@@ -247,12 +248,12 @@ double getIMUData(byte signalFlag) {
   lsm.read();
   sensors_event_t a, m, g, temp;
   lsm.getEvent(&a, &m, &g, &temp);
-  dataIMU[AX] = a.acceleration.x;
-  dataIMU[AY] = a.acceleration.y;
-  dataIMU[AZ] = a.acceleration.z;
-  dataIMU[OMEGAX] = g.gyro.x;
-  dataIMU[OMEGAY] = g.gyro.y;
-  dataIMU[OMEGAZ] = g.gyro.z;
+  dataIMU[AX] = a.acceleration.x - accelX_bias;
+  dataIMU[AY] = a.acceleration.y - accelY_bias;
+  dataIMU[AZ] = a.acceleration.z - accelZ_bias;
+  dataIMU[OMEGAX] = g.gyro.x - gyroX_bias;
+  dataIMU[OMEGAY] = g.gyro.y - gyroY_bias;
+  dataIMU[OMEGAZ] = g.gyro.z - gyroZ_bias;
 
   return dataIMU[signalFlag];
 }
@@ -341,4 +342,41 @@ void moveMotor(int motor_speed, byte direction) {
   byte motorPWM = map(motor_speed, 0, 100, 0, 255);
   analogWrite(motorLPWMPin, motorPWM);
   analogWrite(motorRPWMPin, motorPWM);
+}
+
+void calibrateIMU() {
+  double gyroX;
+  double gyroY;
+  double gyroZ;
+  double accelX;
+  double accelY;
+  double accelZ;
+  int numSamples;
+  unsigned long prevTime = millis();
+  unsigned long elapsedTime;
+  do{
+    elapsedTime = millis() - prevTime;
+    lsm.read();
+    sensors_event_t a, m, g, temp;
+    lsm.getEvent(&a, &m, &g, &temp);
+
+    gyroX += g.gyro.x;
+    gyroY += g.gyro.y;
+    gyroZ += g.gyro.z;
+
+    accelX += a.acceleration.x;
+    accelY += a.acceleration.y;
+    accelZ += a.acceleration.z;
+    numSamples++;
+
+    servoBias = analogRead(POT_1);
+    setServoAngle(0.0);
+  } while (elapsedTime < calibrationTime);
+  gyroX_bias = gyroX / numSamples;
+  gyroY_bias = gyroY / numSamples;
+  gyroZ_bias = gyroZ / numSamples;
+
+  accelX_bias = accelX / numSamples;
+  accelY_bias = accelY / numSamples;
+  accelZ_bias = accelZ / numSamples;  
 }
