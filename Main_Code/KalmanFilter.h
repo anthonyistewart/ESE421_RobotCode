@@ -10,11 +10,14 @@ class KalmanFilter{
     KalmanFilter();
 
     Matrix<3,1> prediction(Matrix<2,1> u, Matrix<3,1> z_k, float dt);
+    Matrix<3,1> predictionNoCamera(Matrix<2,1> u, float dt);
     Matrix<3,1> h(Matrix<3,1> x_hat_prime);
     void setQ(Matrix<3,3> Q_NEW);
     void setR(Matrix<3,3> R_NEW);
+    void setRobotLength(double L);
   
   private:
+    double L; //Robot Length
     Matrix<3,3> I; //Identity Matrix
      
     Matrix<3,3> Q;
