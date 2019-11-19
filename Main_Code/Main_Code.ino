@@ -3,17 +3,21 @@
 #include <SPI.h>
 #include <Adafruit_LSM9DS1.h>
 #include <Adafruit_Sensor.h>
+#include "KalmanFilter.h"
+#include <Wire.h>
 
 // Define Robot Status Flags
-#define SETUP 0
-#define RUNNING 1
-#define CALIBRATE 2
-#define HALT 3
+#define HALT 0
+#define SETUP 1
+#define RUNNING 2
+#define CALIBRATE 3
+
 
 // Define Robot Action Flags
 #define WALL_FOLLOW 0
 #define TURN 1
 #define STOP 2
+#define DEAD_RECKONING 3
 
 // Define Motor Commands
 #define FORWARD 0
@@ -33,6 +37,7 @@
 #define RIGHT_PING 1
 #define FRONT_PING 2
 
+// Define pinouts
 #define servoPin 7 // pin for servo signal
 
 #define frontPingTrigPin 22 // ping sensor trigger pin (output from Arduino)
@@ -72,10 +77,10 @@ const double Kp = 5;  // Proportional Feedback
 const double K_psi = 1.5;  // Heading Feeback
 const double w_theta = 0.5;  //Theta Filter Cutoff
 const double g = 9.81; //Acceleration due to gravity
-const double W = 18; // wheel base length in CM
-const double Q = 0.25;
-const double R = 32;
+const double L = 18; //Length of robot in cm
+const double velocity = 1; // 100cm/s
 
+// Acceleration Bias
 double accelX_bias; //Bias for X Acceleration
 double accelY_bias; //Bias for Y Acceleration
 double accelZ_bias; //Bias for Z Acceleration
@@ -87,22 +92,42 @@ double servoAngleDeg = 0.0; // Steering angle delta
 int servoBias; //Servo Bias for calibration mode
 
 // Kalman Filter
-double P = 1;
-double x_k;
-double x_lastk;
-double z_k;
-double xhat;
-double K;
+Matrix<3, 3> Q = {0.001, 0, 0,
+                  0, 0.001, 0,
+                  0, 0, 0.001
+                 };
+
+Matrix<3, 3> R = {0.001, 0, 0,
+                  0, 0.001, 0,
+                  0, 0, 0.001
+                 };
+KalmanFilter kf;
 
 byte status_flag = SETUP;
-byte action_flag = STOP;
+byte action_flag = DEAD_RECKONING;
 
 Servo steeringServo;
 Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1(LSM9DS1_XGCS, LSM9DS1_MCS);
 
+//I2C Communication
+const int RECEIVE_REGISTER_SIZE = 8;
+const int SEND_REGISTER_SIZE = 8;
+float receive_registers[RECEIVE_REGISTER_SIZE];
+float send_registers[SEND_REGISTER_SIZE];
+int current_send_register = 3;
+
+const int STOP_COMMAND = 100;
+const int TURN_COMMAND = 101;
+const int DEADRECK_COMMAND = 102;
+
 void setup() {
   // Enable Serial Communications
   Serial.begin(115200);
+
+  // Initiate i2c bus
+  Wire.begin(0x8);
+  Wire.onReceive(receiveEvent);
+  Wire.onRequest(sendData);
 
   // Initialize Front Ping Sensor
   pinMode(frontPingGrndPin, OUTPUT); digitalWrite(frontPingGrndPin, LOW);
@@ -144,8 +169,12 @@ void setup() {
   calibrateIMU();
   Serial.println("Sensors calibrated!");
 
+  kf.setQ(Q);
+  kf.setR(R);
+  kf.setRobotLength(L);
+
   status_flag = RUNNING;
-  action_flag = WALL_FOLLOW;
+  action_flag = DEAD_RECKONING;
 }
 
 void loop() {
@@ -159,6 +188,9 @@ void loop() {
   static double turn_degree = 90;
   static unsigned long prevTime_heading;
   static unsigned long prevTime_theta;
+  static double dt_kalman;
+  static unsigned long prevTime_kalman;
+  static byte return_state;
 
   if (status_flag == RUNNING) {
     //Check front ping sensor distance
@@ -168,20 +200,23 @@ void loop() {
       // Enter Calibration Mode
       status_flag = CALIBRATE;
     }
-
-    Serial.print("Ping Dist. - R: ");
-    Serial.print(getPingDistance(RIGHT_PING), DEC);
-    Serial.print(", L: ");
-    Serial.print(getPingDistance(LEFT_PING), DEC);
-    Serial.print(", F: ");
-    Serial.println(getPingDistance(FRONT_PING), DEC);
+    /*
+      Serial.print("Ping Dist. - R: ");
+      Serial.print(getPingDistance(RIGHT_PING), DEC);
+      Serial.print(", L: ");
+      Serial.print(getPingDistance(LEFT_PING), DEC);
+      Serial.print(", F: ");
+      Serial.println(getPingDistance(FRONT_PING), DEC);
+    */
 
     // Heading Calculation
     dt_heading = ((micros() - prevTime_heading) * 0.000001);
     heading_psi += (getIMUData(OMEGAZ) * dt_heading);
     prevTime_heading = micros();
-    Serial.print("Heading (Ψ): ");
-    Serial.println(heading_psi, DEC);
+    /*
+      Serial.print("Heading (Ψ): ");
+      Serial.println(heading_psi, DEC);
+    */
 
     // Theta Hat Calculation
     dt_theta = ((micros() - prevTime_theta) * 0.000001);
@@ -189,8 +224,10 @@ void loop() {
     theta_bias = w_theta * (theta_g - theta_hat);
     theta_hat += ((theta_bias + getIMUData(OMEGAX)) * dt_theta);
     prevTime_theta = micros();
-    Serial.print("Theta Hat (θ): ");
-    Serial.println(theta_hat, DEC);
+    /*
+      Serial.print("Theta Hat (θ): ");
+      Serial.println(theta_hat, DEC);
+    */
 
 
     double error;
@@ -214,6 +251,7 @@ void loop() {
       }
     }
 
+    //EXECUTE TURN
     else if (action_flag == TURN) {
       // Move Forward
       moveMotor(50, FORWARD);
@@ -221,7 +259,7 @@ void loop() {
       double desired_heading = turn_degree + last_heading;
       error = (desired_heading - heading_psi);
       if (abs(error) < 0.1) {
-        action_flag = WALL_FOLLOW;
+        action_flag = return_state;
         turn_degree = 0;
         last_heading = heading_psi;
         servoAngleDeg = 0;
@@ -232,31 +270,55 @@ void loop() {
         servoAngleDeg = -K_psi * error;
       }
     }
+
+    // Stop Robot
     else if (action_flag == STOP) {
       // Stop Motors
       moveMotor(0, STOP_MOTOR);
     }
-    // Set steering angle
-    servoAngleDeg = constrain(servoAngleDeg, -20.0, 20.0);
-    setServoAngle(servoAngleDeg);
-  }
 
-  if (status_flag == CALIBRATE) {
-    // Stop Motors
-    moveMotor(0, STOP_MOTOR);
-    double dist = getPingDistance(FRONT_PING);
-    do {
-      servoBias = analogRead(POT_1);
-      setServoAngle(0.0);
-      Serial.print("Servo Bias: ");
-      Serial.println(servoBias);
-      dist = getPingDistance(FRONT_PING);
-    } while (dist < 10);
+    // Dead Reckoning
+    else if (action_flag == DEAD_RECKONING) {
+      dt_kalman = ((micros() - prevTime_kalman) * 0.000001);
+      moveMotor(velocityToPWM(velocity), FORWARD);
+      if (f_dist <= 5) {
+        // Enter Calibration Mode
+        status_flag = CALIBRATE;
+      }
+      else {
+        Matrix<2, 1> u = {velocity, servoAngleDeg};
+        Matrix<3, 1> x_k = kf.predictionNoCamera(u, dt_kalman);
+        error = (0 - x_k(2));
 
-    status_flag = RUNNING;
+        // Proportional Feedback
+        servoAngleDeg = -K_psi * error;
+        prevTime_kalman = micros();
+      }
+      // Set steering angle
+      servoAngleDeg = constrain(servoAngleDeg, -20.0, 20.0);
+      setServoAngle(servoAngleDeg);
+    }
+
+    if (status_flag == CALIBRATE) {
+      // Stop Motors
+      moveMotor(0, STOP_MOTOR);
+      double dist = getPingDistance(FRONT_PING);
+      do {
+        servoBias = analogRead(POT_1);
+        setServoAngle(0.0);
+        Serial.print("Servo Bias: ");
+        Serial.println(servoBias);
+        dist = getPingDistance(FRONT_PING);
+      } while (dist < 10);
+
+      status_flag = RUNNING;
+    }
+    if(status_flag == HALT){
+      moveMotor(0, STOP_MOTOR);
+    }
+//    Serial.print("Servo Angle: ");
+//    Serial.println(servoAngleDeg);
   }
-  Serial.print("Servo Angle: ");
-  Serial.println(servoAngleDeg);
 }
 
 double getIMUData(byte signalFlag) {
@@ -397,20 +459,44 @@ void calibrateIMU() {
   accelZ_bias = accelZ / numSamples;
 }
 
-double getKalmanPrediction() {
-  // Update P
-  P = P + Q;
+int velocityToPWM(double v) {
+  double a = 1.985 * 0.00001;
+  double b = -2.838 * 0.001;
+  double c = 0.1479;
+  double d = -1.729;
+  double e = 50.997;
+  double y = (a * pow(v, 4)) + (b * pow(v, 3)) + (c * pow(v, 2)) + (d * v) + e;
+  return ceil(y);
+}
 
-  // Calculate Current K-Gain
-  K = P / (P + R);
+void receiveEvent(int howMany) {
+  String full_datastring = "";
 
-  // Calculate predicted xhat with measurement
-  xhat = x_lastk + K * (z_k - x_lastk);
+  while (Wire.available()) {
+    char c = Wire.read();
+    full_datastring = full_datastring + c;
+  }
 
-  // Update P
-  P = P * (1 - K);
+  byte command = full_datastring.charAt(0);
+  Serial.println(command);
 
-  // Store last estimate
-  x_lastk = xhat;
+  if(command == STOP_COMMAND){
+    Serial.println("Received STOP from Pi");
+    action_flag = STOP;
+  }
+  if(command == TURN_COMMAND){
+    Serial.println("Received TURN from Pi");
+    action_flag = TURN;
+  }
+  if(command == DEADRECK_COMMAND){
+    Serial.println("Received DEADRECK from Pi");
+    action_flag = DEAD_RECKONING;
+  }
+}
 
+void sendData(){
+  char data[8];
+  dtostrf(send_registers[current_send_register],8, 4, data);  
+  Serial.println(data);  
+  Wire.write(data);
 }

@@ -1,3 +1,5 @@
 .idea
+*.pyc
 venv
 /Python_Code/test_images/
+/Python_Code/__pycache__/
