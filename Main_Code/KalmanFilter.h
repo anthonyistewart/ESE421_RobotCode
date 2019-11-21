@@ -34,6 +34,8 @@ class KalmanFilter{
     Matrix<3,3> P;  // Error Covariance Matrix
     Matrix<3,3> P_prime;  // Error Covariance Matrix predicted by Kalman Filter
     Matrix<3,3> P_last;  // previous Error Covariance Matrix predicted by Kalman Filter
+
+    double correctAngle(double angle);
 };
 
 #endif

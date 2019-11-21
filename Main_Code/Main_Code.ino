@@ -388,7 +388,7 @@ void setServoAngle(double sDeg)
   //  100us is about 20deg (higher values --> more right steering)
   //  wrong ServoCenter values can damage servo
   //
-  double ServoCenter_us = 800 + servoBias;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     00.0;
+  double ServoCenter_us = 800 + servoBias;
   double ServoScale_us = 8.0;    // micro-seconds per degree
   //
   //  NEVER send a servo command without constraining servo motion!
