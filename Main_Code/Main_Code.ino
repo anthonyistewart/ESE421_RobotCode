@@ -72,7 +72,7 @@
 // Define Constants
 const long ping_timeout = 5000; // Timeout for ping sensor
 const double desiredDistanceCM = 30.0;  // Desired Distance from wall in CM
-const int calibrationTime = 10000;  // Calibration time in milliseconds
+const int calibrationTime = 5000;  // Calibration time in milliseconds
 const double Kp = 5;  // Proportional Feedback
 const double K_psi = 1.5;  // Heading Feeback
 const double w_theta = 0.5;  //Theta Filter Cutoff
@@ -119,6 +119,12 @@ int current_send_register = 3;
 const int STOP_COMMAND = 100;
 const int TURN_COMMAND = 101;
 const int DEADRECK_COMMAND = 102;
+
+//Cone Positions in cm
+const int coneX[] = {50, 85, 60};
+const int coneY[] = {50 , 40, 60};
+const double minDist = 10; //Robot must be at least 10cm away from cone to move onto the next
+int current_cone = 0;
 
 void setup() {
   // Enable Serial Communications
@@ -194,7 +200,7 @@ void loop() {
   static byte return_state;
 
   if (status_flag == RUNNING) {
-    
+
     //Check front ping sensor distance
     double f_dist = getPingDistance(FRONT_PING);
 
@@ -277,25 +283,32 @@ void loop() {
       r_imu = getIMUData(OMEGAZ);
       moveMotor(velocityToPWM(velocity), FORWARD);
       prevTime_kalman = micros();
-      
+
       if (f_dist <= 5) {
         // Enter Calibration Mode
         status_flag = CALIBRATE;
       }
       else {
-        Matrix<2, 1> u = {velocity, r_imu};
+        Matrix<2, 1> u = {velocity*100, r_imu};
         Matrix<3, 1> x_k = kf.predictionNoCamera(u, dt_kalman);
-        error = (0 - x_k(2));
+        
+        // Check to see if we're close to the cone, if so go to the next one
+        if (distToCone(x_k, current_cone) <= minDist) {
+          Serial.print("Hit Cone #");
+          Serial.println(current_cone);
+          moveMotor(0, STOP_MOTOR);
+          while(true){
+            delay(1);
+          }
+        }
+        double desiredHeading = angleToCone(x_k, current_cone);
+        //Serial.println(desiredHeading);
+        error = (desiredHeading - x_k(2));
 
         // Proportional Feedback
         servoAngleDeg = -K_psi * error;
-
-        Serial.print("PSI:");
-        Serial.print(x_k(2));
-        Serial.print(", ");
-        Serial.print("Delta:");
-        Serial.println(servoAngleDeg);
       }
+
       // Set steering angle
       servoAngleDeg = constrain(servoAngleDeg, -20.0, 20.0);
       setServoAngle(servoAngleDeg);
@@ -315,11 +328,11 @@ void loop() {
 
       status_flag = RUNNING;
     }
-    if(status_flag == HALT){
+    if (status_flag == HALT) {
       moveMotor(0, STOP_MOTOR);
     }
-//    Serial.print("Servo Angle: ");
-//    Serial.println(servoAngleDeg);
+    //    Serial.print("Servo Angle: ");
+    //    Serial.println(servoAngleDeg);
   }
 }
 
@@ -482,23 +495,33 @@ void receiveEvent(int howMany) {
   byte command = full_datastring.charAt(0);
   Serial.println(command);
 
-  if(command == STOP_COMMAND){
+  if (command == STOP_COMMAND) {
     Serial.println("Received STOP from Pi");
     action_flag = STOP;
   }
-  if(command == TURN_COMMAND){
+  if (command == TURN_COMMAND) {
     Serial.println("Received TURN from Pi");
     action_flag = TURN;
   }
-  if(command == DEADRECK_COMMAND){
+  if (command == DEADRECK_COMMAND) {
     Serial.println("Received DEADRECK from Pi");
     action_flag = DEAD_RECKONING;
   }
 }
 
-void sendData(){
+void sendData() {
   char data[8];
-  dtostrf(send_registers[current_send_register],8, 4, data);  
-  Serial.println(data);  
+  dtostrf(send_registers[current_send_register], 8, 4, data);
+  Serial.println(data);
   Wire.write(data);
+}
+
+double angleToCone(Matrix<3, 1> x_k, int cone) {
+  double beta = 90.0 - ((180/PI)*atan((x_k(1) - coneY[cone]) / (x_k(0) - coneX[cone])));
+  return beta*-1;
+}
+
+double distToCone(Matrix<3, 1> x_k, int cone) {
+  double dist = sqrt(sq(x_k(0) - coneX[cone]) + sq((x_k(1) - coneY[cone])));
+  return dist;
 }
