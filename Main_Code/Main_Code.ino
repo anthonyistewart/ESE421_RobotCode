@@ -186,6 +186,7 @@ void loop() {
   static double theta_bias;
   static double last_heading;
   static double turn_degree = 90;
+  static double r_imu;
   static unsigned long prevTime_heading;
   static unsigned long prevTime_theta;
   static double dt_kalman;
@@ -193,6 +194,7 @@ void loop() {
   static byte return_state;
 
   if (status_flag == RUNNING) {
+    
     //Check front ping sensor distance
     double f_dist = getPingDistance(FRONT_PING);
 
@@ -200,14 +202,6 @@ void loop() {
       // Enter Calibration Mode
       status_flag = CALIBRATE;
     }
-    /*
-      Serial.print("Ping Dist. - R: ");
-      Serial.print(getPingDistance(RIGHT_PING), DEC);
-      Serial.print(", L: ");
-      Serial.print(getPingDistance(LEFT_PING), DEC);
-      Serial.print(", F: ");
-      Serial.println(getPingDistance(FRONT_PING), DEC);
-    */
 
     // Heading Calculation
     dt_heading = ((micros() - prevTime_heading) * 0.000001);
@@ -280,19 +274,27 @@ void loop() {
     // Dead Reckoning
     else if (action_flag == DEAD_RECKONING) {
       dt_kalman = ((micros() - prevTime_kalman) * 0.000001);
+      r_imu = getIMUData(OMEGAZ);
       moveMotor(velocityToPWM(velocity), FORWARD);
+      prevTime_kalman = micros();
+      
       if (f_dist <= 5) {
         // Enter Calibration Mode
         status_flag = CALIBRATE;
       }
       else {
-        Matrix<2, 1> u = {velocity, servoAngleDeg};
+        Matrix<2, 1> u = {velocity, r_imu};
         Matrix<3, 1> x_k = kf.predictionNoCamera(u, dt_kalman);
         error = (0 - x_k(2));
 
         // Proportional Feedback
         servoAngleDeg = -K_psi * error;
-        prevTime_kalman = micros();
+
+        Serial.print("PSI:");
+        Serial.print(x_k(2));
+        Serial.print(", ");
+        Serial.print("Delta:");
+        Serial.println(servoAngleDeg);
       }
       // Set steering angle
       servoAngleDeg = constrain(servoAngleDeg, -20.0, 20.0);
