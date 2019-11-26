@@ -92,9 +92,9 @@ double servoAngleDeg = 0.0; // Steering angle delta
 int servoBias; //Servo Bias for calibration mode
 
 // Kalman Filter
-Matrix<3, 3> Q = {0.001, 0, 0,
-                  0, 0.001, 0,
-                  0, 0, 0.001
+Matrix<3, 3> Q = {0.01, 0, 0,
+                  0, 0.01, 0,
+                  0, 0, 0.00001
                  };
 
 Matrix<3, 3> R = {0.001, 0, 0,
@@ -175,6 +175,8 @@ void setup() {
   calibrateIMU();
   Serial.println("Sensors calibrated!");
 
+  kf = KalmanFilter();
+  
   kf.setQ(Q);
   kf.setR(R);
   kf.setRobotLength(L);
@@ -230,7 +232,7 @@ void loop() {
     */
 
 
-    double error;
+    float error;
     if (action_flag == WALL_FOLLOW) {
       // Move Forward
       moveMotor(50, FORWARD);
@@ -284,29 +286,34 @@ void loop() {
       moveMotor(velocityToPWM(velocity), FORWARD);
       prevTime_kalman = micros();
 
+      // Enter Calibration Mode
       if (f_dist <= 5) {
-        // Enter Calibration Mode
         status_flag = CALIBRATE;
       }
       else {
+        // vel in cm/s, gyro.z
         Matrix<2, 1> u = {velocity*100, r_imu};
         Matrix<3, 1> x_k = kf.predictionNoCamera(u, dt_kalman);
-        
         // Check to see if we're close to the cone, if so go to the next one
         if (distToCone(x_k, current_cone) <= minDist) {
-          Serial.print("Hit Cone #");
-          Serial.println(current_cone);
+//          Serial.print("Hit Cone #");
+//          Serial.println(current_cone);
           moveMotor(0, STOP_MOTOR);
           while(true){
             delay(1);
           }
         }
-        double desiredHeading = angleToCone(x_k, current_cone);
+        // double desiredHeading = angleToCone(x_k, current_cone);
         //Serial.println(desiredHeading);
-        error = (desiredHeading - x_k(2));
-
+        float desiredHeading = 90;
+        Serial.println(desiredHeading);
+        Serial.println(x_k(2));
+        error = (desiredHeading - (float) x_k(2));
+        
+        Serial.println(error);
         // Proportional Feedback
         servoAngleDeg = -K_psi * error;
+        
       }
 
       // Set steering angle
@@ -321,8 +328,8 @@ void loop() {
       do {
         servoBias = analogRead(POT_1);
         setServoAngle(0.0);
-        Serial.print("Servo Bias: ");
-        Serial.println(servoBias);
+//        Serial.print("Servo Bias: ");
+//        Serial.println(servoBias);
         dist = getPingDistance(FRONT_PING);
       } while (dist < 10);
 
@@ -347,7 +354,6 @@ double getIMUData(byte signalFlag) {
   dataIMU[OMEGAX] = g.gyro.x - gyroX_bias;
   dataIMU[OMEGAY] = g.gyro.y - gyroY_bias;
   dataIMU[OMEGAZ] = g.gyro.z - gyroZ_bias;
-
   return dataIMU[signalFlag];
 }
 
@@ -493,18 +499,18 @@ void receiveEvent(int howMany) {
   }
 
   byte command = full_datastring.charAt(0);
-  Serial.println(command);
+  // Serial.println(command);
 
   if (command == STOP_COMMAND) {
-    Serial.println("Received STOP from Pi");
+    // Serial.println("Received STOP from Pi");
     action_flag = STOP;
   }
   if (command == TURN_COMMAND) {
-    Serial.println("Received TURN from Pi");
+    // Serial.println("Received TURN from Pi");
     action_flag = TURN;
   }
   if (command == DEADRECK_COMMAND) {
-    Serial.println("Received DEADRECK from Pi");
+    // Serial.println("Received DEADRECK from Pi");
     action_flag = DEAD_RECKONING;
   }
 }
@@ -512,7 +518,7 @@ void receiveEvent(int howMany) {
 void sendData() {
   char data[8];
   dtostrf(send_registers[current_send_register], 8, 4, data);
-  Serial.println(data);
+  // Serial.println(data);
   Wire.write(data);
 }
 
@@ -525,3 +531,7 @@ double distToCone(Matrix<3, 1> x_k, int cone) {
   double dist = sqrt(sq(x_k(0) - coneX[cone]) + sq((x_k(1) - coneY[cone])));
   return dist;
 }
+
+//double cvtCamToWorldX(double camX, double camY, double psi, double x, double y) {
+//    
+//}
