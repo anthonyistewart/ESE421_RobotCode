@@ -69,7 +69,6 @@ class Kalman:
     def angleToCone(x_l, cone):
         return 90 - (180/math.pi * np.arctan(x_k[1] - cone[1]) / x_k[0] - cone[0])
 
-
     # function computes PWM and servoAngle to send back to Arduino
     # @inputs
     # x_k: <3,1> matrix x, y, psi
@@ -85,5 +84,5 @@ class Kalman:
         # desiredHeading = angleToCone(x_k, cone)
         error = desiredHeading - x_k[2]
         pwm_angle[1] = -K_PSI * error
-
+        
         return pwm_angle
