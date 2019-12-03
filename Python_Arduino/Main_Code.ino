@@ -273,7 +273,6 @@ void loop() {
 //    }
 //
 //    // Dead Reckoning
-//    else 
     if (action_flag == DEAD_RECKONING) {
       dt_kalman = ((micros() - prevTime_kalman) * 0.000001);
       r_imu = getIMUData(OMEGAZ);
@@ -281,7 +280,7 @@ void loop() {
       send_registers[1] = r_imu; 
       send_registers[2] = velocity;
       send_registers[3] = dt_kalman;
-      // set PWM and servoAngleDeg
+      // set PWM and servoAngleDeg from data sent from Pi
       moveMotor(receive_registers[4], FORWARD);
       servoAngleDeg = constrain(receive_registers[5], -20.0, 20.0);
       setServoAngle(servoAngleDeg);
@@ -290,9 +289,7 @@ void loop() {
       // Enter Calibration Mode
       if (f_dist <= 5) {
         status_flag = CALIBRATE;
-      }
-
-      
+      }  
     }
 
     // center wheels
@@ -330,6 +327,7 @@ float getIMUData(byte signalFlag) {
   return dataIMU[signalFlag];
 }
 
+// gets ping distance form all 3 sensors
 float getPingDistance(byte pingDir) {
   //LEFT - RIGHT - FRONT
   static float pingDistanceCM[] = {0.0, 0.0, 0.0};
@@ -337,40 +335,18 @@ float getPingDistance(byte pingDir) {
   byte echoPins[] = {leftPingEchoPin, rightPingEchoPin, frontPingEchoPin};
   byte grndPins[] = {leftPingGrndPin, rightPingGrndPin, frontPingGrndPin};
 
-  //
-  // 3000 us timeout implies maximum distance is 51cm
-  // but in practice, actual max larger?
-  //
   const long timeout_us = ping_timeout;
-  //
-  // pingTrigPin = trigger pin
-  // pingEchoPin = echo pin
-  // The PING))) is triggered by a HIGH pulse of 2 or more microseconds.
-  // Give a short LOW pulse beforehand to ensure a clean HIGH pulse:
-  //
   digitalWrite(trigPins[pingDir], LOW);
   delayMicroseconds(2);
   digitalWrite(trigPins[pingDir], HIGH);
   delayMicroseconds(5);
   digitalWrite(trigPins[pingDir], LOW);
-  //
-  // The echo pin is used to read the signal from the PING))): a HIGH
-  // pulse whose duration is the time (in microseconds) from the sending
-  // of the ping to the reception of its echo off of an object.
-  //
   unsigned long echo_time;
   echo_time = pulseIn(echoPins[pingDir], HIGH, timeout_us);
   if (echo_time == 0)
   {
     echo_time = timeout_us;
   }
-  //
-  // return the distance in centimeters
-  // distance = (10^-6) * (echo_time_us) * (speed of sound m/s) * (100 cm/m) / 2
-  // divide by 2 because we measure "round trip" time for echo
-  // (0.000001 * echo_time_us * 340.0 * 100.0 / 2.0)
-  // = 0.017*echo_time
-  //
   return constrain(0.017 * echo_time, 5.0, 50.0);
 }
 
@@ -416,6 +392,7 @@ void moveMotor(int motor_speed, byte direction) {
   analogWrite(motorRPWMPin, motorPWM);
 }
 
+// helper function to calibrate IMU
 void calibrateIMU() {
   float gyroX;
   float gyroY;
@@ -453,6 +430,8 @@ void calibrateIMU() {
   accelZ_bias = accelZ / numSamples;
 }
 
+// helper function to convert from inputted v to PWM
+// equation from Piazza post
 int velocityToPWM(float v) {
   float a = 1.985 * 0.00001;
   float b = -2.838 * 0.001;
@@ -463,7 +442,9 @@ int velocityToPWM(float v) {
   return ceil(y);
 }
 
+// Amice code for I2C
 void receiveEvent(int howMany) {
+  Serial.println("calling receiveEvent");
   String full_datastring = "";
 
   while (Wire.available()) {
@@ -501,17 +482,27 @@ void receiveEvent(int howMany) {
 
 }
 
+// @inputs
+// x_k: <3,1> matrix x, y, psi
+// cone: current cone # to aim for
+// @returns angle from current position to cone
 float angleToCone(Matrix<3, 1> x_k, int cone) {
   float beta = 90.0 - ((180/PI)*atan((x_k(1) - coneY[cone]) / (x_k(0) - coneX[cone])));
   return beta*-1;
 }
 
+// @inputs
+// x_k: <3,1> matrix x, y, psi
+// cone: current cone # to aim for
+// @returns distance from current position to cone
 float distToCone(Matrix<3, 1> x_k, int cone) {
   float dist = sqrt(sq(x_k(0) - coneX[cone]) + sq((x_k(1) - coneY[cone])));
   return dist;
 }
 
+// Amice code for I2C
 void sendData() {
+  Serial.println("sending data");
   char data[8];
   dtostrf(send_registers[current_send_register], 8, 4, data);
   // Serial.println(data);
