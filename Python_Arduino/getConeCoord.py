@@ -32,12 +32,6 @@ for frame in camera.capture_continuous(rawCapture, format = "bgr", use_video_por
 
         # find mask that has colors within lowerBound and upperBound
         mask = cv2.inRange(equalized, lb, ub)
-        cv2.imshow('img', img)
-        cv2.waitKey(0)
-        # cv2.imshow('equalized', equalized)
-        # cv2.waitKey(0)
-        # cv2.imshow('mask', mask)
-        # cv2.waitKey(0)
 
         # find contours in mask image
         contours = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -57,11 +51,6 @@ for frame in camera.capture_continuous(rawCapture, format = "bgr", use_video_por
                 # draw green contour around cone
                 cv2.drawContours(img, [c], -1, (0, 255, 0), 2)
                 base = tuple(c[c[:, :, 1].argmax()][0])
-                print("pixel(x,y): ", base)
-                # draw red dot at base of cone
-                cv2.circle(img, base, 5, (0, 0, 255), -1)
-                cv2.imshow("Cone", img)
-                cv2.waitKey(0)
 
         # convert pixel (x,y) coordinate to image(x,y)
         # 1 pixel = 1.12um
@@ -74,9 +63,6 @@ for frame in camera.capture_continuous(rawCapture, format = "bgr", use_video_por
         f = 400 * 1.12 * 10**-6
         c_x_p = h * f / i_z_p 
         c_y_p = h * i_y_p / i_z_p
-        print("(c_x_p, c_y_p): ", c_x_p, ",", c_y_p)
-        all_expected_x.append(c_x_p)
-        all_expected_y.append(c_y_p)
 
         # compute actual x, y
         # extract number of tiles in x direction and what size (big vs small)
