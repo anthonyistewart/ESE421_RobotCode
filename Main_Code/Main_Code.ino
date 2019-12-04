@@ -1,84 +1,11 @@
-#include "math.h"
-#include <Servo.h>
 #include <SPI.h>
+#include <Wire.h>
+#include <Servo.h>
 #include <Adafruit_LSM9DS1.h>
 #include <Adafruit_Sensor.h>
+#include "math.h"
+#include "definitions.h"
 #include "KalmanFilter.h"
-#include <Wire.h>
-
-// Define Robot Status Flags
-#define HALT 0
-#define SETUP 1
-#define RUNNING 2
-#define CALIBRATE 3
-
-
-// Define Robot Action Flags
-#define WALL_FOLLOW 0
-#define TURN 1
-#define STOP 2
-#define DEAD_RECKONING 3
-
-// Define Motor Commands
-#define FORWARD 0
-#define BACKWARD 1
-#define STOP_MOTOR -1
-
-// Define IMU Commands
-#define AX 0
-#define AY 1
-#define AZ 2
-#define OMEGAX 3
-#define OMEGAY 4
-#define OMEGAZ 5
-
-// Define Ping Sensor Directions
-#define LEFT_PING 0
-#define RIGHT_PING 1
-#define FRONT_PING 2
-
-// Define pinouts
-#define servoPin 7 // pin for servo signal
-
-#define frontPingTrigPin 22 // ping sensor trigger pin (output from Arduino)
-#define frontPingEchoPin 24 // ping sensor echo pin (input to Arduino)
-#define frontPingGrndPin 26 // ping sensor ground pin (use digital pin as ground)
-
-#define rightPingTrigPin 23 // ping sensor trigger pin (output from Arduino)
-#define rightPingEchoPin 25 // ping sensor echo pin (input to Arduino)
-#define rightPingGrndPin 27 // ping sensor ground pin (use digital pin as ground)
-
-#define leftPingTrigPin 6 // ping sensor trigger pin (output from Arduino)
-#define leftPingEchoPin 5 // ping sensor echo pin (input to Arduino)
-#define leftPingGrndPin 0 // ping sensor ground pin (use digital pin as ground)
-
-#define motorFwdPin 8 // HIGH for FWD; LOW for REV
-#define motorRevPin 9 // LOW for FWD; HIGH for REV
-#define motorLPWMPin 10 // Left Motor Speed Control
-#define motorRPWMPin 11 // Right Motor Speed Control
-
-// IMU uses SPI -- here are the pins on the Mega
-// (Pins 49 & 47 are user selection)
-#define LSM9DS1_SCK 52  //BDK-mega
-#define LSM9DS1_MISO 50 //BDK-mega
-#define LSM9DS1_MOSI 51 //BDK-mega
-#define LSM9DS1_XGCS 49 //BDK-mega
-#define LSM9DS1_MCS 47 //BDK-mega
-
-// Define pins for both pots
-#define POT_1 A7
-#define POT_2 A8
-
-// Define Constants
-const long ping_timeout = 5000; // Timeout for ping sensor
-const double desiredDistanceCM = 30.0;  // Desired Distance from wall in CM
-const int calibrationTime = 5000;  // Calibration time in milliseconds
-const double Kp = 5;  // Proportional Feedback
-const double K_psi = 1.5;  // Heading Feeback
-const double w_theta = 0.5;  //Theta Filter Cutoff
-const double g = 9.81; //Acceleration due to gravity
-const double L = 18; //Length of robot in cm
-const double velocity = 1; // 100cm/s
 
 // Acceleration Bias
 double accelX_bias; //Bias for X Acceleration
@@ -101,10 +28,7 @@ Matrix<3, 3> R = {0.001, 0, 0,
                   0, 0.001, 0,
                   0, 0, 0.001
                  };
-KalmanFilter kf;
-
-byte status_flag = SETUP;
-byte action_flag = DEAD_RECKONING;
+KalmanFilter kf = KalmanFilter();
 
 Servo steeringServo;
 Adafruit_LSM9DS1 lsm = Adafruit_LSM9DS1(LSM9DS1_XGCS, LSM9DS1_MCS);
@@ -116,15 +40,21 @@ float receive_registers[RECEIVE_REGISTER_SIZE];
 float send_registers[SEND_REGISTER_SIZE];
 int current_send_register = 3;
 
+const int UPDATE_SEND_REGISTER = 11;
 const int STOP_COMMAND = 100;
 const int TURN_COMMAND = 101;
 const int DEADRECK_COMMAND = 102;
 
 //Cone Positions in cm
-const int coneX[] = {50, 85, 60};
-const int coneY[] = {50 , 40, 60};
-const double minDist = 10; //Robot must be at least 10cm away from cone to move onto the next
+int coneX[] = {3000, 85, 60};
+int coneY[] = {3000 , 40, 60};
+const double minDist = 100;
 int current_cone = 0;
+
+bool camera_data_available = false;
+
+byte status_flag = INIT;
+byte action_flag = DEAD_RECKONING;
 
 void setup() {
   // Enable Serial Communications
@@ -175,8 +105,7 @@ void setup() {
   calibrateIMU();
   Serial.println("Sensors calibrated!");
 
-  kf = KalmanFilter();
-  
+  //Initialize Kalman Filter
   kf.setQ(Q);
   kf.setR(R);
   kf.setRobotLength(L);
@@ -197,7 +126,6 @@ void loop() {
   static double r_imu;
   static unsigned long prevTime_heading;
   static unsigned long prevTime_theta;
-  static double dt_kalman;
   static unsigned long prevTime_kalman;
   static byte return_state;
 
@@ -231,21 +159,19 @@ void loop() {
       Serial.println(theta_hat, DEC);
     */
 
-
-    float error;
     if (action_flag == WALL_FOLLOW) {
       // Move Forward
       moveMotor(50, FORWARD);
       // Lost Wall, Stay Straight
       if (getPingDistance(RIGHT_PING) >= 50.0) {
-        error = (last_heading - heading_psi);
+        double error = (last_heading - heading_psi);
 
         // Proportional Feedback
         servoAngleDeg = -K_psi * error;
       }
       // Follow Wall
       else {
-        error = (desiredDistanceCM - getPingDistance(RIGHT_PING));
+        double error = (desiredDistanceCM - getPingDistance(RIGHT_PING));
 
         // Proportional Feedback
         servoAngleDeg = -Kp * error;
@@ -259,14 +185,13 @@ void loop() {
       moveMotor(50, FORWARD);
 
       double desired_heading = turn_degree + last_heading;
-      error = (desired_heading - heading_psi);
+      double error = (desired_heading - heading_psi);
       if (abs(error) < 0.1) {
         action_flag = return_state;
         turn_degree = 0;
         last_heading = heading_psi;
         servoAngleDeg = 0;
       }
-
       else {
         // Proportional Feedback
         servoAngleDeg = -K_psi * error;
@@ -281,46 +206,58 @@ void loop() {
 
     // Dead Reckoning
     else if (action_flag == DEAD_RECKONING) {
-      dt_kalman = ((micros() - prevTime_kalman) * 0.000001);
-      r_imu = getIMUData(OMEGAZ);
-      moveMotor(velocityToPWM(velocity), FORWARD);
-      prevTime_kalman = micros();
 
       // Enter Calibration Mode
       if (f_dist <= 5) {
         status_flag = CALIBRATE;
       }
+
       else {
-        // vel in cm/s, gyro.z
-        Matrix<2, 1> u = {velocity*100, r_imu};
-        Matrix<3, 1> x_k = kf.predictionNoCamera(u, dt_kalman);
-        // Check to see if we're close to the cone, if so go to the next one
+        // Kalman Filter Calculations
+        double dt_kalman = ((micros() - prevTime_kalman) * 0.000001);
+        r_imu = getIMUData(OMEGAZ);
+        prevTime_kalman = micros();
+
+        Matrix<2> u = {velocity, r_imu};
+        if(camera_data_available){
+          Matrix<2> z_k = {0,0};
+          Matrix<3> x_k = kf.prediction(u, z_k, dt_kalman);
+        }
+        else{
+          Matrix<3> x_k = kf.predictionNoCamera(u, dt_kalman);
+        }
+        
+        // Check to see if we're close to the cone, stop the robot
         if (distToCone(x_k, current_cone) <= minDist) {
-//          Serial.print("Hit Cone #");
-//          Serial.println(current_cone);
           moveMotor(0, STOP_MOTOR);
-          while(true){
+          while (true) {
             delay(1);
           }
         }
-        // double desiredHeading = angleToCone(x_k, current_cone);
-        //Serial.println(desiredHeading);
-        float desiredHeading = 90;
-        Serial.println(desiredHeading);
+
+        double desiredHeading = angleToCone(x_k, current_cone);
+        double error = (desiredHeading - x_k(2));
+
+        Serial.print("X: ");
+        Serial.print(x_k(0));
+        Serial.print(",Y: ");
+        Serial.print(x_k(1));
+        Serial.print(",PSI: ");
         Serial.println(x_k(2));
-        error = (desiredHeading - (float) x_k(2));
-        
-        Serial.println(error);
+
         // Proportional Feedback
-        servoAngleDeg = -K_psi * error;
-        
+        servoAngleDeg = K_psi * error;
+
       }
+      // Move Motor
+      moveMotor(velocityToPWM(velocity), FORWARD);
 
       // Set steering angle
       servoAngleDeg = constrain(servoAngleDeg, -20.0, 20.0);
       setServoAngle(servoAngleDeg);
     }
 
+    // Calibration mode for the robot
     if (status_flag == CALIBRATE) {
       // Stop Motors
       moveMotor(0, STOP_MOTOR);
@@ -328,18 +265,13 @@ void loop() {
       do {
         servoBias = analogRead(POT_1);
         setServoAngle(0.0);
-//        Serial.print("Servo Bias: ");
-//        Serial.println(servoBias);
+        Serial.print("Servo Bias: ");
+        Serial.println(servoBias);
         dist = getPingDistance(FRONT_PING);
       } while (dist < 10);
 
       status_flag = RUNNING;
     }
-    if (status_flag == HALT) {
-      moveMotor(0, STOP_MOTOR);
-    }
-    //    Serial.print("Servo Angle: ");
-    //    Serial.println(servoAngleDeg);
   }
 }
 
@@ -480,7 +412,9 @@ void calibrateIMU() {
   accelZ_bias = accelZ / numSamples;
 }
 
-int velocityToPWM(double v) {
+// Takes in a value for velocity in cm/s and returns a value in pwm
+int velocityToPWM(double v_cm_s) {
+  double v = v_cm_s / 100.0;
   double a = 1.985 * 0.00001;
   double b = -2.838 * 0.001;
   double c = 0.1479;
@@ -499,19 +433,32 @@ void receiveEvent(int howMany) {
   }
 
   byte command = full_datastring.charAt(0);
-  // Serial.println(command);
 
   if (command == STOP_COMMAND) {
-    // Serial.println("Received STOP from Pi");
+    Serial.println("Received STOP from Pi");
     action_flag = STOP;
   }
   if (command == TURN_COMMAND) {
-    // Serial.println("Received TURN from Pi");
+    Serial.println("Received TURN from Pi");
     action_flag = TURN;
   }
   if (command == DEADRECK_COMMAND) {
-    // Serial.println("Received DEADRECK from Pi");
+    Serial.println("Received DEADRECK from Pi");
     action_flag = DEAD_RECKONING;
+  }
+  if (command == UPDATE_SEND_REGISTER) {
+    int data = full_datastring.substring(1).toInt();
+    current_send_register = data;
+    Serial.println("updating send register");
+    Serial.println(current_send_register);
+  }
+  // If the command is inside the default write register range then write to the write register
+  if (command >= 0 && command < RECEIVE_REGISTER_SIZE)  {
+    // received a float and therefore write to a register
+    Serial.println("Received Data Float. Writing to register " + String(command));
+    float data = full_datastring.substring(1).toFloat();
+    Serial.println(data);
+    receive_registers[command] = data;
   }
 }
 
@@ -522,16 +469,12 @@ void sendData() {
   Wire.write(data);
 }
 
-double angleToCone(Matrix<3, 1> x_k, int cone) {
-  double beta = 90.0 - ((180/PI)*atan((x_k(1) - coneY[cone]) / (x_k(0) - coneX[cone])));
-  return beta*-1;
+double angleToCone(Matrix<3> x_k, int cone) {
+  double beta = 90.0 - ((180 / PI) * atan((x_k(0) - coneX[cone]) / (x_k(1) - coneY[cone])));
+  return beta;
 }
 
-double distToCone(Matrix<3, 1> x_k, int cone) {
+double distToCone(Matrix<3> x_k, int cone) {
   double dist = sqrt(sq(x_k(0) - coneX[cone]) + sq((x_k(1) - coneY[cone])));
   return dist;
 }
-
-//double cvtCamToWorldX(double camX, double camY, double psi, double x, double y) {
-//    
-//}
