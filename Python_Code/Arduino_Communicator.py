@@ -5,32 +5,33 @@ import time
 
 
 class ArduinoCommunicator:
-    def __init__(self, Arduino_address):
-        self.addr = Arduino_address
+    def __init__(self, arduino_address):
+        self.addr = arduino_address
         self.bus = SMBus(1)
         self.write_attempt = 0
         self.data_from_arduino = dict.fromkeys(["IMU data"])
         self.UPDATE_SEND_REGISTER = 11
         
-        #TODO expand this dictionary to the mapping you want
-        #for the Arduino data
+        # TODO expand this dictionary to the mapping you want
+        # For the Arduino data
         self.data_to_arduino_register = {
-            "cone_x": 0,
-            "cone_y": 1
+            "c_x_p": 1,
+            "c_y_p": 2
             }
-        
-        #these need to match the arduino side commands
+
+        # These need to match the Arduino side commands
         self.arduino_commands = {
-            "stop": 100,
-            "turn": 101,
-            "deadreck": 102
+            "STOP": 100,
+            "TURN": 101,
+            "DEAD_RECKONING": 102,
+            "SENT_CAMERA_DATA": 103
             }
         self.SIZE_OF_ARDUINO_SEND_REGISTERS = 8
         
     def write_string(self, word):
         # convert a string into a bytearray object in Python
         data = bytearray(word, 'utf8')
-        #convert the byte array object to a list as required by write_i2c_block_data
+        # convert the byte array object to a list as required by write_i2c_block_data
         data = list(data)
         self._write(10, data)
     
@@ -66,14 +67,16 @@ class ArduinoCommunicator:
             self.write_attempt = 0
         except Exception as e:
             self.write_attempt += 1
+            
             if self.write_attempt < TIMEOUT:
                 print("Failed to write due to Exception " + str(e) + ". Trying again")
-                self._write(register, data)
+                #self._write(register, data)
             else:
                 print("Timed out writing")
                 traceback.print_exc()
                 
     def get_arduino_data_from_register(self, register):
+        TIMEOUT = 10
         """
         Read's data currently stored in the Arduino's send register
         """
@@ -81,7 +84,7 @@ class ArduinoCommunicator:
             raise Exception("Error in write float: register must be in [0,7]")
         try:
             self._write(self.UPDATE_SEND_REGISTER, list(bytearray(str(register), 'utf8')))
-            data = self.bus.read_i2c_block_data(self.addr,8,8)
+            data = self.bus.read_i2c_block_data(self.addr,register,8)
             word = "".join([chr(i) for i in data])
             return float(word)
         except Exception as e:
@@ -92,16 +95,3 @@ class ArduinoCommunicator:
             else:
                 print("Timed out writing")
                 traceback.print_exc()
-                
-
-
-if __name__ == "__main__":
-    
-    com = ArduinoCommunicator(0x8)
-    com.trigger_method("stop")
-    print("Sent stop command")
-    time.sleep(5)
-    com.trigger_method("deadreck")
-    print("sent deadreck command")
-
-        

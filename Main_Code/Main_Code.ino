@@ -24,9 +24,8 @@ Matrix<3, 3> Q = {0.01, 0, 0,
                   0, 0, 0.00001
                  };
 
-Matrix<3, 3> R = {0.001, 0, 0,
-                  0, 0.001, 0,
-                  0, 0, 0.001
+Matrix<2, 2> R = {0.001, 0,
+                  0, 0.001
                  };
 KalmanFilter kf = KalmanFilter();
 
@@ -44,10 +43,11 @@ const int UPDATE_SEND_REGISTER = 11;
 const int STOP_COMMAND = 100;
 const int TURN_COMMAND = 101;
 const int DEADRECK_COMMAND = 102;
+const int CAMERA_DATA_AVAILABLE = 103;
 
 //Cone Positions in cm
-int coneX[] = {3000, 85, 60};
-int coneY[] = {3000 , 40, 60};
+int coneX[] = {2000, 85, 60};
+int coneY[] = {2000 , 40, 60};
 const double minDist = 100;
 int current_cone = 0;
 
@@ -219,12 +219,14 @@ void loop() {
         prevTime_kalman = micros();
 
         Matrix<2> u = {velocity, r_imu};
+        Matrix<3> x_k;
         if(camera_data_available){
           Matrix<2> z_k = {0,0};
-          Matrix<3> x_k = kf.prediction(u, z_k, dt_kalman);
+          x_k = kf.prediction(u, z_k, dt_kalman);
+          camera_data_available = false;
         }
         else{
-          Matrix<3> x_k = kf.predictionNoCamera(u, dt_kalman);
+          x_k = kf.predictionNoCamera(u, dt_kalman);
         }
         
         // Check to see if we're close to the cone, stop the robot
@@ -445,6 +447,10 @@ void receiveEvent(int howMany) {
   if (command == DEADRECK_COMMAND) {
     Serial.println("Received DEADRECK from Pi");
     action_flag = DEAD_RECKONING;
+  }
+  if (command == CAMERA_DATA_AVAILABLE) {
+    Serial.println("Received CAMERA_DATA_AVAILABLE from Pi");
+    camera_data_available = true;
   }
   if (command == UPDATE_SEND_REGISTER) {
     int data = full_datastring.substring(1).toInt();
